@@ -595,23 +595,19 @@ if [[ "$GRANT_IAM" != "true" ]]; then
                 echo "❌ Error: Missing required environment variables for email notification"
                 echo "   Required: NOTIFY_CLIENT, NOTIFY_CLIENT_SECRET, KC_URL, NOTIFY_API_URL"
             else
-                # Generate the email body content with the list of non-compliant resources
-                EMAIL_BODY="GCP Canadian Resource Scanner found non-Canadian resources:\n\n"
-                # Add non-compliant projects and resources to the email body
-                current_project=""
-                sort "$ERRORS_FILE" | while IFS="|" read -r project resource; do
-                    if [[ "$project" != "$current_project" ]]; then
-                        if [[ -n "$current_project" ]]; then
-                            EMAIL_BODY+="\n"
-                        fi
-                        EMAIL_BODY+="Project: $project\n"
-                        current_project="$project"
-                    fi
-                    EMAIL_BODY+="  - $resource\n"
-                done
-                # Create a temporary file for the email body
+                # Generate the email body content with the list of affected projects
                 EMAIL_BODY_FILE="${TEMP_DIR}/email_body.txt"
-                echo -e "$EMAIL_BODY" > "$EMAIL_BODY_FILE"
+                echo "GCP Canadian Resource Scanner detected non-Canadian resources in the following projects:" > "$EMAIL_BODY_FILE"
+                echo "" >> "$EMAIL_BODY_FILE"
+
+                # Get unique list of affected projects
+                unique_projects=$(sort "$ERRORS_FILE" | cut -d'|' -f1 | sort -u)
+                echo "$unique_projects" | while read -r project; do
+                    echo "- $project" >> "$EMAIL_BODY_FILE"
+                done
+
+                echo "" >> "$EMAIL_BODY_FILE"
+                echo "Please see the attached CSV file for detailed resource information." >> "$EMAIL_BODY_FILE"
                 # Create a CSV attachment with the full report
                 CSV_ATTACHMENT_FILE="${TEMP_DIR}/non_compliant_resources.csv"
                 echo "Project,Resource Type,Resource Name,Location" > "$CSV_ATTACHMENT_FILE"
