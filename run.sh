@@ -73,15 +73,25 @@ fi
 echo "==============================================="
 echo ""
 
+# Calculate total projects for progress tracking
+total_projects=$(( ${#environments[@]} * ${#projects[@]} ))
+current_project=0
+
 for ev in "${environments[@]}"
 do
     for ns in "${projects[@]}"
     do
-        echo "Project: $ns-$ev"
         PROJECT_ID=$ns-$ev
+        current_project=$((current_project + 1))
+        echo "Project: $PROJECT_ID [$current_project/$total_projects]"
 
-        if [[ ! -z `gcloud projects describe ${PROJECT_ID} --verbosity=none` ]]; then
-            gcloud config set project ${PROJECT_ID}
+        # Quick check if project exists before proceeding
+        if ! gcloud projects describe ${PROJECT_ID} --verbosity=none >/dev/null 2>&1; then
+            echo "  ⚠️  Project $PROJECT_ID does not exist or is not accessible, skipping..."
+            continue
+        fi
+
+        gcloud config set project ${PROJECT_ID} --quiet
             
             # Either grant IAM permissions OR scan resources based on environment variable
             if [[ "$GRANT_IAM" == "true" ]]; then
@@ -140,17 +150,24 @@ do
                     "servicenetworking.googleapis.com/Connection"
                 )
 
-                # Get all resources with their types and locations
-                all_resources=$(timeout 60 gcloud asset search-all-resources --project=${PROJECT_ID} --format="csv[no-heading](assetType,location,name)" 2>/dev/null)
+                # Get all resources with their types and locations (reduced timeout for faster failure)
+                all_resources=$(timeout 30 gcloud asset search-all-resources --project=${PROJECT_ID} --format="csv[no-heading](assetType,location,name)" 2>/dev/null)
+
+                # Cache compute instances data to avoid repeated API calls
+                echo "  Caching compute instances data..."
+                instances_cache=$(timeout 20 gcloud compute instances list --project="$PROJECT_ID" --format="csv[no-heading](name,zone,networkInterfaces[0].subnetwork)" 2>/dev/null)
 
                 # Special check for multi-regional Cloud Storage buckets
                 echo "  Checking for multi-regional Cloud Storage buckets..."
-                buckets=$(timeout 30 gsutil ls -p ${PROJECT_ID} 2>/dev/null)
+                buckets=$(timeout 20 gsutil ls -p ${PROJECT_ID} 2>/dev/null)
 
                 if [[ ! -z "$buckets" ]]; then
                     while read -r bucket; do
-                        # Get bucket location information
-                        bucket_info=$(timeout 15 gsutil ls -L -b "$bucket" 2>/dev/null | grep -E "Location constraint:|LocationType:")
+                        # Skip empty lines
+                        [[ -z "$bucket" ]] && continue
+
+                        # Get bucket location information with reduced timeout
+                        bucket_info=$(timeout 10 gsutil ls -L -b "$bucket" 2>/dev/null | head -20 | grep -E "Location constraint:|LocationType:")
                         location_constraint=$(echo "$bucket_info" | grep "Location constraint:" | awk '{print $3}')
                         location_type=$(echo "$bucket_info" | grep "LocationType:" | awk '{print $2}')
 
@@ -176,14 +193,17 @@ do
 
                 # Special check for Artifact Registry repositories
                 echo "  Checking for Artifact Registry repositories..."
-                # Check if Artifact Registry API is enabled
-                if timeout 15 gcloud services list --enabled --filter="name:artifactregistry.googleapis.com" --project=${PROJECT_ID} | grep -q "artifactregistry.googleapis.com"; then
+                # Check if Artifact Registry API is enabled (with faster timeout and early exit)
+                if timeout 10 gcloud services list --enabled --filter="name:artifactregistry.googleapis.com" --project=${PROJECT_ID} --format="value(name)" 2>/dev/null | grep -q "artifactregistry.googleapis.com"; then
                     # Get a better formatted output that includes all details we need
                     # Use format with 'description' to get more accurate location info
-                    artifact_repos=$(timeout 30 gcloud artifacts repositories list --project=${PROJECT_ID} --format="csv[no-heading](name,format,location,description)" 2>/dev/null)
+                    artifact_repos=$(timeout 20 gcloud artifacts repositories list --project=${PROJECT_ID} --format="csv[no-heading](name,format,location,description)" 2>/dev/null)
 
                     if [[ ! -z "$artifact_repos" ]]; then
                         while IFS=',' read -r repo_name repo_format repo_location repo_description; do
+                            # Skip empty lines
+                            [[ -z "$repo_name" ]] && continue
+
                             # Extract just the repository name from the full path
                             repo_name=$(basename "$repo_name")
 
@@ -201,14 +221,9 @@ do
                                 fi
                             # Use a more accurate method for location resolution
                             elif [[ -z "$repo_location" ]]; then
-                                # Try to get more detailed information about the repository
-                                repo_details=$(timeout 15 gcloud artifacts repositories describe "$repo_name" --project=${PROJECT_ID} --format="yaml" 2>/dev/null)
-                                actual_location=$(echo "$repo_details" | grep -i "location:" | awk '{print $2}')
-
-                                if [[ ! -z "$actual_location" ]]; then
-                                    repo_location="$actual_location"
-                                    echo "    Info: Found location from detailed query: $repo_location for repo '$repo_name'"
-                                else
+                                # Try to get more detailed information about the repository with faster timeout
+                                repo_details=$(timeout 10 gcloud artifacts repositories describe "$repo_name" --project=${PROJECT_ID} --format="value(name)" --quiet 2>/dev/null)
+                                if [[ ! -z "$repo_details" ]]; then
                                     # Default to assuming northamerica-northeast1 based on your findings
                                     repo_location="northamerica-northeast1 (Montréal)"
                                     echo "    Info: Location field empty, assuming $repo_location for repo '$repo_name' based on console data"
@@ -322,7 +337,7 @@ do
                                         ;;
                                     "storage.googleapis.com/Bucket")
                                         # Check if this is a multi-regional bucket (already handled separately)
-                                        is_multi_regional=$(timeout 15 gsutil ls -L -b "gs://$clean_name" 2>/dev/null | grep -E "LocationType:" | grep "multi-regional")
+                                        is_multi_regional=$(timeout 8 gsutil ls -L -b "gs://$clean_name" 2>/dev/null | head -10 | grep -E "LocationType:" | grep "multi-regional")
                                         if [[ -z "$is_multi_regional" ]]; then
                                             service_name="Cloud Storage Bucket"
                                             category="Backup/Storage"
@@ -338,10 +353,7 @@ do
                                         if [[ "$clean_name" == "default" ]]; then
                                             # For default VPC, check if it has actual resources in non-Canadian regions
                                             if [[ "${INCLUDE_EMPTY_DEFAULT_SUBNETS:-false}" != "true" ]]; then
-                                                # Check for actual VM instances in non-Canadian regions
-                                                # Get instances with their subnet information
-                                                instances_with_subnets=$(timeout 30 gcloud compute instances list --project="$PROJECT_ID" --format="csv[no-heading](name,zone,networkInterfaces[0].subnetwork)" 2>/dev/null)
-
+                                                # Use cached instances data instead of making new API call
                                                 non_canadian_instances=0
                                                 non_canadian_custom_subnet_instances=0
                                                 total_instances=0
@@ -361,7 +373,7 @@ do
                                                             fi
                                                         fi
                                                     fi
-                                                done <<< "$instances_with_subnets"
+                                                done <<< "$instances_cache"
 
                                                 if [[ $non_canadian_custom_subnet_instances -gt 0 ]]; then
                                                     service_name="VPC Network (default, $non_canadian_custom_subnet_instances instances in custom non-Canadian subnets)"
@@ -393,14 +405,14 @@ do
                                                 fi
                                             else
                                                 # Include all default VPCs regardless of usage
-                                                total_instances=$(timeout 30 gcloud compute instances list --project="$PROJECT_ID" --format="csv[no-heading](name,zone)" 2>/dev/null | wc -l)
+                                                total_instances=$(echo "$instances_cache" | grep -c '^[^,]*,[^,]*,[^,]*' 2>/dev/null || echo "0")
                                                 service_name="VPC Network (default, $total_instances total instances)"
                                                 category="Network"
                                                 display_location="Global"
                                             fi
                                         else
-                                            # Custom VPC networks - check their actual usage
-                                            vpc_instances=$(timeout 30 gcloud compute instances list --project="$PROJECT_ID" --filter="networkInterfaces.network:$clean_name" --format="csv[no-heading](name,zone)" 2>/dev/null)
+                                            # Custom VPC networks - check their actual usage from cached data
+                                            vpc_instances=$(echo "$instances_cache" | grep "$clean_name")
                                             non_canadian_instances=$(echo "$vpc_instances" | grep -v "northamerica-northeast" | wc -l)
                                             total_instances=$(echo "$vpc_instances" | wc -l)
                                             if [[ $non_canadian_instances -gt 0 ]]; then
@@ -425,8 +437,8 @@ do
                                         if [[ "$location" != "northamerica-northeast1" && "$location" != "northamerica-northeast2" && "$location" != "ca" && "$location" != "CA" ]]; then
                                             # For non-Canadian subnets, check if they have any instances (unless configured to include all)
                                             if [[ "${INCLUDE_EMPTY_DEFAULT_SUBNETS:-false}" != "true" ]]; then
-                                                # Check if subnet has any VM instances
-                                                instances_in_subnet=$(timeout 15 gcloud compute instances list --project="$PROJECT_ID" --filter="networkInterfaces.subnetwork:$clean_name" --format="value(name)" 2>/dev/null | wc -l)
+                                                # Use cached data to count instances in this subnet
+                                                instances_in_subnet=$(echo "$instances_cache" | grep -F "$resource_name" | wc -l)
                                                 if [[ $instances_in_subnet -gt 0 ]]; then
                                                     service_name="Subnet (with $instances_in_subnet instances)"
                                                     category="Network"
@@ -529,7 +541,6 @@ do
 
                 echo ""
             fi  # End of if GRANT_IAM/else (scan resources) block
-        fi
     done
 done
 
