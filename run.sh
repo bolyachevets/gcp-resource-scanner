@@ -347,7 +347,7 @@ do
                                         fi
                                         ;;
 
-                                    # Network services
+                                                                        # Network services
                                     "compute.googleapis.com/Network")
                                         # VPC networks are global resources - focus on actual usage, not potential
                                         if [[ "$clean_name" == "default" ]]; then
@@ -357,7 +357,6 @@ do
                                                 non_canadian_instances=0
                                                 non_canadian_custom_subnet_instances=0
                                                 total_instances=0
-
                                                 while IFS=',' read -r instance_name zone subnet_path; do
                                                     if [[ ! -z "$instance_name" ]]; then
                                                         total_instances=$((total_instances + 1))
@@ -393,7 +392,7 @@ do
                                                     fi
                                                 else
                                                     if [[ $total_instances -gt 0 ]]; then
-                                                        # VPC with only Canadian instances
+                                                        # VPC with only Canadian instances - this is compliant
                                                         service_name="VPC Network (default, $total_instances Canadian instances only)"
                                                         category="Network"
                                                         display_location="Global (Canadian resources only)"
@@ -412,15 +411,30 @@ do
                                             fi
                                         else
                                             # Custom VPC networks - check their actual usage from cached data
-                                            vpc_instances=$(echo "$instances_cache" | grep "$clean_name")
-                                            non_canadian_instances=$(echo "$vpc_instances" | grep -v "northamerica-northeast" | wc -l)
-                                            total_instances=$(echo "$vpc_instances" | wc -l)
+                                            # More precise matching: look for instances whose subnet path contains this VPC name
+                                            # Format: instance_name,zone,projects/PROJECT/regions/REGION/subnetworks/SUBNET
+                                            vpc_instances=""
+                                            non_canadian_instances=0
+                                            total_instances=0
+                                            while IFS=',' read -r instance_name zone subnet_path; do
+                                                if [[ ! -z "$instance_name" && "$subnet_path" == *"$clean_name"* ]]; then
+                                                    vpc_instances="${vpc_instances}${instance_name},${zone},${subnet_path}\n"
+                                                    total_instances=$((total_instances + 1))
+
+                                                    # Check if instance is in non-Canadian zone
+                                                    if [[ "$zone" != *"northamerica-northeast"* ]]; then
+                                                        non_canadian_instances=$((non_canadian_instances + 1))
+                                                    fi
+                                                fi
+                                            done <<< "$instances_cache"
+
                                             if [[ $non_canadian_instances -gt 0 ]]; then
                                                 service_name="VPC Network (custom, $non_canadian_instances non-Canadian instances)"
                                                 category="Network"
                                                 display_location="Global (with non-Canadian resources)"
                                             else
                                                 if [[ $total_instances -gt 0 ]]; then
+                                                    # VPC with only Canadian instances - this is compliant
                                                     service_name="VPC Network (custom, $total_instances Canadian instances only)"
                                                     category="Network"
                                                     display_location="Global (Canadian resources only)"
@@ -431,6 +445,63 @@ do
                                                 fi
                                             fi
                                         fi
+                                        ;;
+                                    "compute.googleapis.com/Address")
+                                        # For global static IPs, check if they're associated with Canadian resources
+                                        if [[ "$location" == "global" ]]; then
+                                            # Get detailed static IP information to check for Canadian associations
+                                            static_ip_details=$(timeout 10 gcloud compute addresses describe "$clean_name" --global --project="$PROJECT_ID" --format="value(users[0],subnetwork,region)" 2>/dev/null)
+                                            if [[ ! -z "$static_ip_details" ]]; then
+                                                # Check if the static IP is associated with Canadian resources
+                                                IFS=$'\t' read -r user_resource subnetwork region <<< "$static_ip_details"
+
+                                                canadian_association=false
+
+                                                # Check if associated with Canadian region
+                                                if [[ "$region" == *"northamerica-northeast"* ]]; then
+                                                    canadian_association=true
+                                                fi
+
+                                                # Check if associated with Canadian subnetwork
+                                                if [[ "$subnetwork" == *"northamerica-northeast"* ]]; then
+                                                    canadian_association=true
+                                                fi
+
+                                                # Check if the user resource (like load balancer) is in Canadian region
+                                                if [[ "$user_resource" == *"northamerica-northeast"* ]]; then
+                                                    canadian_association=true
+                                                fi
+
+                                                if [[ "$canadian_association" == "true" ]]; then
+                                                    echo "    ✓ Global Static IP '$clean_name' is associated with Canadian resources"
+                                                    service_name="Global Static IP (Canadian association)"
+                                                    category="Network"
+                                                else
+                                                    echo "    ℹ️  Skipping Global Static IP '$clean_name' - no Canadian resource associations found"
+                                                    continue 2
+                                                fi
+                                            else
+                                                echo "    ℹ️  Skipping Global Static IP '$clean_name' - unable to determine associations (may be unused)"
+                                                continue 2
+                                            fi
+                                        else
+                                            service_name="Static IP"
+                                            category="Network"
+                                        fi
+                                        ;;
+                                    "compute.googleapis.com/GlobalAddress")
+                                        # Skip global addresses - they're routing resources, not data storage
+                                        echo "    ℹ️  Skipping Global IP '$clean_name' - global routing resource (no data residency impact)"
+                                        continue 2
+                                        ;;
+                                    "servicenetworking.googleapis.com/Connection")
+                                        # Skip service network connections - they're control plane resources
+                                        if [[ "$location" == "global" ]]; then
+                                            echo "    ℹ️  Skipping Service Network Connection '$clean_name' - global control plane resource (no data residency impact)"
+                                            continue 2
+                                        fi
+                                        service_name="Service Network Connection"
+                                        category="Network"
                                         ;;
                                     "compute.googleapis.com/Subnetwork")
                                         # Check if this is a default subnet and if it's being used
@@ -455,10 +526,6 @@ do
                                             service_name="Subnet"
                                             category="Network"
                                         fi
-                                        ;;
-                                    "compute.googleapis.com/Address")
-                                        service_name="Static IP"
-                                        category="Network"
                                         ;;
                                     "compute.googleapis.com/GlobalAddress")
                                         service_name="Global IP"
@@ -526,6 +593,15 @@ do
                                             echo "    ✓ $service_name '$clean_name': $final_display_location"
                                             echo "$PROJECT_ID|$service_name: $clean_name ($final_display_location)" >> "$COMPLIANT_FILE"
                                         fi
+                                    # Special handling for Global Static IPs with Canadian associations
+                                    elif [[ "$asset_type" == "compute.googleapis.com/Address" && "$location" == "global" && "$service_name" == "Global Static IP (Canadian association)" ]]; then
+                                        echo "    ✓ $service_name '$clean_name': $final_display_location"
+                                        echo "$PROJECT_ID|$service_name: $clean_name ($final_display_location)" >> "$COMPLIANT_FILE"
+                                    # Skip certain global network resources that don't impact data residency
+                                    elif [[ "$asset_type" == "compute.googleapis.com/GlobalAddress" ]] ||
+                                         [[ "$asset_type" == "servicenetworking.googleapis.com/Connection" && "$location" == "global" ]]; then
+                                        # These were already skipped above with continue 2
+                                        continue 2
                                     else
                                         echo "    ⚠️  $service_name '$clean_name' is NOT in Canadian region: $final_display_location"
                                         echo "$PROJECT_ID|$service_name: $clean_name ($final_display_location)" >> "$ERRORS_FILE"
