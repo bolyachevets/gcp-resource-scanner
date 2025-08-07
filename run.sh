@@ -687,11 +687,11 @@ if [[ "$GRANT_IAM" != "true" ]]; then
                 echo "GCP Canadian Resource Scanner detected non-Canadian resources in the following projects:" > "$EMAIL_BODY_FILE"
                 echo "" >> "$EMAIL_BODY_FILE"
 
-                # Get unique list of affected projects
+                # Get unique list of affected projects and format them properly
                 unique_projects=$(sort "$ERRORS_FILE" | cut -d'|' -f1 | sort -u)
-                echo "$unique_projects" | while read -r project; do
+                while IFS= read -r project; do
                     echo "- $project" >> "$EMAIL_BODY_FILE"
-                done
+                done <<< "$unique_projects"
 
                 echo "" >> "$EMAIL_BODY_FILE"
                 echo "Please see the attached CSV file for detailed resource information." >> "$EMAIL_BODY_FILE"
@@ -814,13 +814,15 @@ if [[ "$GRANT_IAM" != "true" ]]; then
                         fi
                     else
                         # Simple JSON construction (less robust but works for basic cases)
+                        # Properly escape newlines for JSON instead of removing them
+                        ESCAPED_BODY=$(sed 's/"/\\"/g; s/$/\\n/g' "$EMAIL_BODY_FILE" | tr -d '\n' | sed 's/\\n$//')
                         if [[ ! -z "$BASE64_ATTACHMENT" ]]; then
                             # Include attachment if base64 encoding was successful
                             ATTACHMENT_FILENAME="non_compliant_resources_$(date +%Y-%m-%d).csv"
-                            EMAIL_JSON="{\"recipients\":\"$EMAIL_RECIPIENTS\",\"content\":{\"subject\":\"$EMAIL_SUBJECT\",\"body\":\"$(sed 's/"/\\"/g' "$EMAIL_BODY_FILE" | tr -d '\n')\",\"attachments\":[{\"fileName\":\"$ATTACHMENT_FILENAME\",\"fileBytes\":\"$BASE64_ATTACHMENT\",\"fileUrl\":\"\",\"attachOrder\":1}]}}"
+                            EMAIL_JSON="{\"recipients\":\"$EMAIL_RECIPIENTS\",\"content\":{\"subject\":\"$EMAIL_SUBJECT\",\"body\":\"$ESCAPED_BODY\",\"attachments\":[{\"fileName\":\"$ATTACHMENT_FILENAME\",\"fileBytes\":\"$BASE64_ATTACHMENT\",\"fileUrl\":\"\",\"attachOrder\":1}]}}"
                         else
                             # No attachment if base64 encoding failed
-                            EMAIL_JSON="{\"recipients\":\"$EMAIL_RECIPIENTS\",\"content\":{\"subject\":\"$EMAIL_SUBJECT\",\"body\":\"$(sed 's/"/\\"/g' "$EMAIL_BODY_FILE" | tr -d '\n')\"}}"
+                            EMAIL_JSON="{\"recipients\":\"$EMAIL_RECIPIENTS\",\"content\":{\"subject\":\"$EMAIL_SUBJECT\",\"body\":\"$ESCAPED_BODY\"}}"
                         fi
                     fi
 
