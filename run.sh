@@ -579,8 +579,10 @@ do
                                         category="Network"
                                         ;;
                                     "dns.googleapis.com/ManagedZone")
-                                        service_name="Cloud DNS Zone"
-                                        category="Network"
+                                        # Skip DNS zones - they are global control plane resources with no data residency impact
+                                        # DNS zones only contain configuration data, not user data subject to residency requirements
+                                        echo "    ℹ️  Skipping Cloud DNS zone '$clean_name' - global control plane resource (no data residency impact)"
+                                        continue 2
                                         ;;
                                     "servicenetworking.googleapis.com/Connection")
                                         service_name="Service Network Connection"
