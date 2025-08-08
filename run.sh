@@ -191,6 +191,67 @@ do
                     done <<< "$buckets"
                 fi
 
+                # Special check for Cloud Composer environments
+                echo "  Checking for Cloud Composer environments..."
+                if timeout 10 gcloud services list --enabled --filter="name:composer.googleapis.com" --project=${PROJECT_ID} --format="value(name)" 2>/dev/null | grep -q "composer.googleapis.com"; then
+                    # Check Canadian regions individually since --locations=all is not supported
+                    canadian_regions=("northamerica-northeast1" "northamerica-northeast2")
+                    composer_found=false
+
+                    for region in "${canadian_regions[@]}"; do
+                        composer_list=$(timeout 20 gcloud composer environments list --locations="$region" --project=${PROJECT_ID} --format="csv[no-heading](name,location,state)" 2>/dev/null)
+
+                        if [[ ! -z "$composer_list" ]]; then
+                            while IFS=',' read -r composer_name composer_location composer_state; do
+                                # Skip empty lines
+                                [[ -z "$composer_name" ]] && continue
+                                composer_found=true
+
+                                # Extract environment name from full path if needed
+                                env_name=$(basename "$composer_name")
+
+                                # Use region if location is empty (common with CSV output)
+                                if [[ -z "$composer_location" ]]; then
+                                    composer_location="$region"
+                                fi
+
+                                echo "    ✓ Cloud Composer Environment '$env_name' is in Canadian region: $composer_location"
+                                echo "$PROJECT_ID|Cloud Composer: $env_name ($composer_location)" >> "$COMPLIANT_FILE"
+                            done <<< "$composer_list"
+                        fi
+                    done
+
+                    # Also check for environments in non-Canadian regions (common ones)
+                    non_canadian_regions=("us-central1" "us-east1" "us-west1" "europe-west1" "asia-east1")
+                    for region in "${non_canadian_regions[@]}"; do
+                        composer_list=$(timeout 20 gcloud composer environments list --locations="$region" --project=${PROJECT_ID} --format="csv[no-heading](name,location,state)" 2>/dev/null)
+
+                        if [[ ! -z "$composer_list" ]]; then
+                            while IFS=',' read -r composer_name composer_location composer_state; do
+                                # Skip empty lines
+                                [[ -z "$composer_name" ]] && continue
+                                composer_found=true
+
+                                # Extract environment name from full path if needed
+                                env_name=$(basename "$composer_name")
+
+                                # Use region if location is empty
+                                if [[ -z "$composer_location" ]]; then
+                                    composer_location="$region"
+                                fi
+
+                                echo "    ⚠️  Cloud Composer Environment '$env_name' is NOT in Canadian region: $composer_location"
+                                echo "$PROJECT_ID|Cloud Composer: $env_name ($composer_location)" >> "$ERRORS_FILE"
+                            done <<< "$composer_list"
+                        fi
+                    done
+                    if [[ "$composer_found" == "false" ]]; then
+                        echo "    No Cloud Composer environments found in checked regions"
+                    fi
+                else
+                    echo "    Cloud Composer API not enabled for this project"
+                fi
+
                 # Special check for Artifact Registry repositories
                 echo "  Checking for Artifact Registry repositories..."
                 # Check if Artifact Registry API is enabled (with faster timeout and early exit)
