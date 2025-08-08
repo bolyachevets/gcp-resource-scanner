@@ -174,14 +174,22 @@ do
                         # Extract bucket name
                         bucket_name=$(basename "$bucket")
                         bucket_name=${bucket_name%/}
-                        # Check if multi-regional
+
+                        # Check if this is a multi-regional bucket (either explicitly marked or has multi-regional location)
+                        is_multi_regional=false
                         if [[ "$location_type" == "multi-regional" ]]; then
+                            is_multi_regional=true
+                        elif [[ "$location_constraint" == "US" ]] || [[ "$location_constraint" == "EU" ]] || [[ "$location_constraint" == "ASIA" ]]; then
+                            is_multi_regional=true
+                        fi
+
+                        if [[ "$is_multi_regional" == "true" ]]; then
                             # Check if this is a Canadian multi-region
-                            # For GCS, CA is the multi-regional location for Canada
-                            if [[ "$location_constraint" == "NORTHAMERICA-NORTHEAST1" ]] ||
-                               [[ "$location_constraint" == "NORTHAMERICA-NORTHEAST2" ]] ||
-                               [[ "$location_constraint" == "CA" ]]; then
-                                echo "    ✓ Multi-Regional Cloud Storage Bucket '$bucket_name' is in Canadian multi-region: $location_constraint"
+                            # For GCS, CA is the multi-regional location for Canada, but also check for specific regions
+                            if [[ "$location_constraint" == "CA" ]] ||
+                               [[ "$location_constraint" == "NORTHAMERICA-NORTHEAST1" ]] ||
+                               [[ "$location_constraint" == "NORTHAMERICA-NORTHEAST2" ]]; then
+                                echo "    ✓ Multi-Regional Cloud Storage Bucket '$bucket_name' is in Canadian region: $location_constraint"
                                 echo "$PROJECT_ID|Multi-Regional Cloud Storage: $bucket_name ($location_constraint)" >> "$COMPLIANT_FILE"
                             else
                                 echo "    ⚠️  Multi-Regional Cloud Storage Bucket '$bucket_name' is NOT in Canadian region: $location_constraint"
