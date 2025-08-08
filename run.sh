@@ -40,7 +40,7 @@ if [[ "${TEST_EMAIL:-false}" == "true" ]]; then
     echo "test-project|Test Resource: test-resource (us-central1)" >> "$ERRORS_FILE"
 fi
 
-SERVICE_ACCOUNT="sa-compliance-scanner@c4hnrd-dev.iam.gserviceaccount.com"
+SERVICE_ACCOUNT="sa-compliance-scanner@c4hnrd-tools.iam.gserviceaccount.com"
 ROLE="roles/viewer"
 
 # Environment variable to control whether to grant IAM permissions
