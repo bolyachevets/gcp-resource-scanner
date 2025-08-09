@@ -128,8 +128,7 @@ do
                     "compute.googleapis.com/Snapshot"
                     "file.googleapis.com/Backup"
 
-                    # Storage services
-                    "storage.googleapis.com/Bucket" # Regular and multi-regional buckets
+                    # Storage services (excluding buckets - handled separately)
                     "file.googleapis.com/Instance"
                     "compute.googleapis.com/Disk"
                     "compute.googleapis.com/Snapshot"
@@ -383,8 +382,9 @@ do
                         # Check if this is a target resource type
                         for target_type in "${target_asset_types[@]}"; do
                             if [[ "$asset_type" == "$target_type" ]]; then
-                                # Skip Artifact Registry (already handled separately)
-                                if [[ "$asset_type" == "artifactregistry.googleapis.com/Repository" ]]; then
+                                # Skip services already handled separately
+                                if [[ "$asset_type" == "artifactregistry.googleapis.com/Repository" ]] ||
+                                   [[ "$asset_type" == "storage.googleapis.com/Bucket" ]]; then
                                     continue 2
                                 fi
 
@@ -424,10 +424,6 @@ do
                                     "sqladmin.googleapis.com/BackupRun")
                                         service_name="Cloud SQL Backup"
                                         category="Backup"
-                                        ;;
-                                    "storage.googleapis.com/Bucket")
-                                        service_name="Cloud Storage Bucket"
-                                        category="Backup/Storage"
                                         ;;
                                     "compute.googleapis.com/Snapshot")
                                         service_name="Disk Snapshot"
