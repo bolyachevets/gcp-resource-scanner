@@ -157,8 +157,8 @@ do
                 echo "  Caching compute instances data..."
                 instances_cache=$(timeout 20 gcloud compute instances list --project="$PROJECT_ID" --format="csv[no-heading](name,zone,networkInterfaces[0].subnetwork)" 2>/dev/null)
 
-                # Special check for multi-regional Cloud Storage buckets
-                echo "  Checking for multi-regional Cloud Storage buckets..."
+                # Special check for ALL Cloud Storage buckets (both multi-regional and regional)
+                echo "  Checking for Cloud Storage buckets..."
                 buckets=$(timeout 20 gsutil ls -p ${PROJECT_ID} 2>/dev/null)
 
                 if [[ ! -z "$buckets" ]]; then
@@ -175,25 +175,49 @@ do
                         bucket_name=$(basename "$bucket")
                         bucket_name=${bucket_name%/}
 
-                        # Check if this is a multi-regional bucket (either explicitly marked or has multi-regional location)
+                        # Determine bucket type and location
                         is_multi_regional=false
+                        bucket_location=""
+
                         if [[ "$location_type" == "multi-regional" ]]; then
                             is_multi_regional=true
+                            bucket_location="$location_constraint"
                         elif [[ "$location_constraint" == "US" ]] || [[ "$location_constraint" == "EU" ]] || [[ "$location_constraint" == "ASIA" ]]; then
                             is_multi_regional=true
+                            bucket_location="$location_constraint"
+                        else
+                            # This is a regional bucket
+                            is_multi_regional=false
+                            bucket_location="$location_constraint"
                         fi
 
+                        # Check if bucket is in Canadian location
+                        canadian_bucket=false
+                        if [[ "$bucket_location" == "CA" ]] ||
+                           [[ "$bucket_location" == "NORTHAMERICA-NORTHEAST1" ]] ||
+                           [[ "$bucket_location" == "NORTHAMERICA-NORTHEAST2" ]] ||
+                           [[ "$bucket_location" == "northamerica-northeast1" ]] ||
+                           [[ "$bucket_location" == "northamerica-northeast2" ]]; then
+                            canadian_bucket=true
+                        fi
+
+                        # Report based on bucket type and location
                         if [[ "$is_multi_regional" == "true" ]]; then
-                            # Check if this is a Canadian multi-region
-                            # For GCS, CA is the multi-regional location for Canada, but also check for specific regions
-                            if [[ "$location_constraint" == "CA" ]] ||
-                               [[ "$location_constraint" == "NORTHAMERICA-NORTHEAST1" ]] ||
-                               [[ "$location_constraint" == "NORTHAMERICA-NORTHEAST2" ]]; then
-                                echo "    ✓ Multi-Regional Cloud Storage Bucket '$bucket_name' is in Canadian region: $location_constraint"
-                                echo "$PROJECT_ID|Multi-Regional Cloud Storage: $bucket_name ($location_constraint)" >> "$COMPLIANT_FILE"
+                            if [[ "$canadian_bucket" == "true" ]]; then
+                                echo "    ✓ Multi-Regional Cloud Storage Bucket '$bucket_name' is in Canadian region: $bucket_location"
+                                echo "$PROJECT_ID|Multi-Regional Cloud Storage: $bucket_name ($bucket_location)" >> "$COMPLIANT_FILE"
                             else
-                                echo "    ⚠️  Multi-Regional Cloud Storage Bucket '$bucket_name' is NOT in Canadian region: $location_constraint"
-                                echo "$PROJECT_ID|Multi-Regional Cloud Storage: $bucket_name ($location_constraint)" >> "$ERRORS_FILE"
+                                echo "    ⚠️  Multi-Regional Cloud Storage Bucket '$bucket_name' is NOT in Canadian region: $bucket_location"
+                                echo "$PROJECT_ID|Multi-Regional Cloud Storage: $bucket_name ($bucket_location)" >> "$ERRORS_FILE"
+                            fi
+                        else
+                            # Regional bucket
+                            if [[ "$canadian_bucket" == "true" ]]; then
+                                echo "    ✓ Regional Cloud Storage Bucket '$bucket_name' is in Canadian region: $bucket_location"
+                                echo "$PROJECT_ID|Regional Cloud Storage: $bucket_name ($bucket_location)" >> "$COMPLIANT_FILE"
+                            else
+                                echo "    ⚠️  Regional Cloud Storage Bucket '$bucket_name' is NOT in Canadian region: $bucket_location"
+                                echo "$PROJECT_ID|Regional Cloud Storage: $bucket_name ($bucket_location)" >> "$ERRORS_FILE"
                             fi
                         fi
                     done <<< "$buckets"
@@ -430,17 +454,6 @@ do
                                     "artifactregistry.googleapis.com/Repository")
                                         service_name="Artifact Registry"
                                         category="Storage"
-                                        ;;
-                                    "storage.googleapis.com/Bucket")
-                                        # Check if this is a multi-regional bucket (already handled separately)
-                                        is_multi_regional=$(timeout 8 gsutil ls -L -b "gs://$clean_name" 2>/dev/null | head -10 | grep -E "LocationType:" | grep "multi-regional")
-                                        if [[ -z "$is_multi_regional" ]]; then
-                                            service_name="Cloud Storage Bucket"
-                                            category="Backup/Storage"
-                                        else
-                                            # Skip here as we already handle multi-regional buckets separately
-                                            continue 2
-                                        fi
                                         ;;
 
                                                                         # Network services
@@ -717,8 +730,6 @@ do
             fi  # End of if GRANT_IAM/else (scan resources) block
     done
 done
-
-# Only display the summary if we were scanning resources (not granting IAM permissions)
 if [[ "$GRANT_IAM" != "true" ]]; then
     # Display summary
     echo "=========================================="
