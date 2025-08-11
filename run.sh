@@ -165,14 +165,34 @@ do
                         # Skip empty lines
                         [[ -z "$bucket" ]] && continue
 
+                        # Extract bucket name first
+                        bucket_name=$(basename "$bucket")
+                        bucket_name=${bucket_name%/}
+
                         # Get bucket location information with reduced timeout
                         bucket_info=$(timeout 10 gsutil ls -L -b "$bucket" 2>/dev/null | head -20 | grep -E "Location constraint:|LocationType:")
                         location_constraint=$(echo "$bucket_info" | grep "Location constraint:" | awk '{print $3}')
                         location_type=$(echo "$bucket_info" | grep "LocationType:" | awk '{print $2}')
-
-                        # Extract bucket name
-                        bucket_name=$(basename "$bucket")
-                        bucket_name=${bucket_name%/}
+                        # Fallback: if location info is empty, try alternative method
+                        if [[ -z "$location_constraint" && -z "$location_type" ]]; then
+                            echo "    Debug: No location info from gsutil ls -L, trying alternative method for bucket: $bucket_name"
+                            # Try using gsutil stat command as fallback
+                            bucket_stat=$(timeout 10 gsutil stat "$bucket" 2>/dev/null | grep -E "Location constraint:|LocationType:")
+                            if [[ ! -z "$bucket_stat" ]]; then
+                                location_constraint=$(echo "$bucket_stat" | grep "Location constraint:" | awk '{print $3}')
+                                location_type=$(echo "$bucket_stat" | grep "LocationType:" | awk '{print $2}')
+                                echo "    Debug: Alternative method found location: $location_constraint, type: $location_type"
+                            else
+                                # For Cloud Deploy and similar service buckets, they're often in us-central1
+                                if [[ "$bucket_name" == *"_clouddeploy"* ]] || [[ "$bucket_name" == *"gcf-"* ]]; then
+                                    echo "    Debug: Service bucket detected, likely us-central1: $bucket_name"
+                                    location_constraint="us-central1"
+                                    location_type="regional"
+                                else
+                                    echo "    Warning: Unable to determine location for bucket: $bucket_name"
+                                fi
+                            fi
+                        fi
 
                         # Determine bucket type and location
                         is_multi_regional=false
@@ -863,7 +883,6 @@ if [[ "$GRANT_IAM" != "true" ]]; then
                     echo "❌ Error: Failed to get authentication token from KeyCloak"
                     echo "   Platform: $(uname -s)"
                     echo "   KeyCloak URL: $KC_URL"
-                    echo "   Base64 hash: ${BASIC_HASH:0:20}... (${#BASIC_HASH} chars)"
                     echo "   Full Response: $KC_RESPONSE"
                     echo ""
                     echo "   Common issues in Docker containers:"
