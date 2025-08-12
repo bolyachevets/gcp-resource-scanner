@@ -106,13 +106,13 @@ do
                 fi
             else
                 # Resource scanning logic
-                echo "Checking databases, backups, storage, artifact registry, and network resources in project: ${PROJECT_ID}"
+                echo "Checking databases, backups, storage, compute, artifact registry, and network resources in project: ${PROJECT_ID}"
                 echo "  Note: Multi-regional storage within Canada (CA region) is considered compliant"
 
                 # Use Cloud Asset Inventory to get all relevant resources and their locations
-                echo "  Scanning all database, backup, storage, and network resources using Asset Inventory..."
+                echo "  Scanning all database, backup, storage, compute, and network resources using Asset Inventory..."
 
-                # Define asset types to check for databases, backups, storage, and network
+                # Define asset types to check for databases, backups, storage, compute, and network
                 target_asset_types=(
                     # Database services
                     "sqladmin.googleapis.com/Instance"
@@ -134,6 +134,10 @@ do
                     "compute.googleapis.com/Snapshot"
                     "compute.googleapis.com/Image"
                     "artifactregistry.googleapis.com/Repository"
+
+                    # Compute services
+                    "run.googleapis.com/Service"
+                    "run.googleapis.com/Job"
 
                     # Network services
                     "compute.googleapis.com/Network"
@@ -466,6 +470,16 @@ do
                                     "artifactregistry.googleapis.com/Repository")
                                         service_name="Artifact Registry"
                                         category="Storage"
+                                        ;;
+
+                                    # Compute services
+                                    "run.googleapis.com/Service")
+                                        service_name="Cloud Run Service"
+                                        category="Compute"
+                                        ;;
+                                    "run.googleapis.com/Job")
+                                        service_name="Cloud Run Job"
+                                        category="Compute"
                                         ;;
 
                                                                         # Network services

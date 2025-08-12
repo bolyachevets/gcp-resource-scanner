@@ -12,6 +12,7 @@ This script scans GCP resources for data residency compliance, checking if datab
 - Checks databases (Cloud SQL, Firestore, Bigtable, Spanner, Redis, BigQuery)
 - Verifies storage locations (Cloud Storage, including multi-regional buckets)
 - Checks backups (Cloud SQL backups, disk snapshots, etc.)
+- Examines compute resources (Cloud Run services and jobs)
 - Examines network resources
 - Checks Artifact Registry repositories
 - Generates a summary report of compliant and non-compliant resources
