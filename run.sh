@@ -345,24 +345,20 @@ do
                                 fi
                             # Use a more accurate method for location resolution
                             elif [[ -z "$repo_location" ]]; then
-                                # Get the full repository path for more detailed queries
-                                full_repo_path="projects/${PROJECT_ID}/locations/*/repositories/$repo_name"
-
-                                # Try to get location from the repository's full resource name
-                                repo_location=$(timeout 10 gcloud artifacts repositories describe "$repo_name" --project=${PROJECT_ID} --format="value(name)" --quiet 2>/dev/null | grep -o 'locations/[^/]*' | cut -d'/' -f2 2>/dev/null)
+                                # Try to get location directly from repository resource
+                                repo_location=$(timeout 10 gcloud artifacts repositories describe "$repo_name" --project=${PROJECT_ID} --format="value(name)" --quiet 2>/dev/null | sed -n 's|.*/locations/\([^/]*\)/.*|\1|p')
 
                                 if [[ ! -z "$repo_location" ]]; then
-                                    echo "    Info: Retrieved location '$repo_location' for repo '$repo_name' from resource name"
+                                    echo "    Info: Retrieved location '$repo_location' for repo '$repo_name' from describe command"
                                 else
-                                    # Try alternative method with list command and location filter
-                                    repo_location=$(timeout 10 gcloud artifacts repositories list --project=${PROJECT_ID} --format="csv[no-heading](name,location)" --filter="name:$repo_name" --quiet 2>/dev/null | grep "$repo_name" | cut -d',' -f2 2>/dev/null)
+                                    # If that fails, try getting it from the full list with better formatting
+                                    repo_location=$(timeout 10 gcloud artifacts repositories list --project=${PROJECT_ID} --format="table[no-heading](name.segment(-1),name.segment(-3))" --filter="name.segment(-1):$repo_name" --quiet 2>/dev/null | awk '{print $2}' | head -1)
 
                                     if [[ ! -z "$repo_location" ]]; then
-                                        echo "    Info: Retrieved location '$repo_location' for repo '$repo_name' from filtered list"
+                                        echo "    Info: Retrieved location '$repo_location' for repo '$repo_name' from list command"
                                     else
-                                        # Check if this is likely a Canadian repo based on common patterns
-                                        # Most BC government repos are in northamerica-northeast1
-                                        repo_location="northamerica-northeast1"
+                                        echo "    Warning: Unable to determine location for repository '$repo_name' - marking as non-Canadian for safety"
+                                        repo_location="unknown-non-canadian"
                                     fi
                                 fi
                             fi
