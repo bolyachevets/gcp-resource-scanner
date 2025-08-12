@@ -15,6 +15,8 @@ This script scans GCP resources for data residency compliance, checking if datab
 - Examines compute resources (Cloud Run services and jobs)
 - Examines network resources
 - Checks Artifact Registry repositories
+- Saves non-compliant resources to Google Cloud Storage (optional)
+- Exits with error code for alerting when violations are found
 - Generates a summary report of compliant and non-compliant resources
 
 ## Usage
@@ -35,39 +37,30 @@ To grant the Viewer role to the service account defined in the script:
 GRANT_VIEWER_ROLE=true ./run.sh
 ```
 
-### Email Notifications
-
-The script can send email notifications when non-Canadian resources are detected:
-
-```bash
-# Enable email notifications
-SEND_EMAIL_NOTIFICATION=true ./run.sh
-```
-
 ### Report Storage
 
-The script can optionally save compliance reports to a Google Cloud Storage bucket:
+The script can save non-compliant resources to a Google Cloud Storage bucket for historical tracking and analysis:
 
 ```bash
-# Enable GCS report storage
+# Enable GCS report storage - only saves non-compliant resources
 SAVE_TO_GCS=true REPORT_BUCKET=my-compliance-reports ./run.sh
 ```
+
+When enabled, this creates timestamped CSV files containing only resources that violate Canadian data residency requirements.
+
+### Alerting and Monitoring
+
+The script is designed to work with GCP alerting systems:
+
+- **Exit Code 0**: All resources are compliant (success)
+- **Exit Code 1**: Non-compliant resources detected (failure)
+
+When run as a GCP Cloud Run job, you can set up alerts based on job failure to be notified when compliance violations are found.
 
 You can create a `.env` file in the project root with these variables:
 
 ```
-# Email notification settings
-SEND_EMAIL_NOTIFICATION=false
-NOTIFY_CLIENT=your-notify-client-id
-NOTIFY_CLIENT_SECRET=your-notify-client-secret
-KC_URL=https://keycloak.example.com/auth/realms/your-realm/protocol/openid-connect/token
-NOTIFY_API_URL=https://notify-api.example.com
-ERROR_EMAIL_RECIPIENTS=compliance-team@example.com,admin@example.com
-
-# Test email without actual non-compliant resources
-TEST_EMAIL=false
-
-# GCS report storage
+# GCS report storage - only saves non-compliant resources
 SAVE_TO_GCS=false
 REPORT_BUCKET=my-compliance-reports-bucket
 

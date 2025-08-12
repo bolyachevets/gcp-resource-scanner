@@ -33,13 +33,6 @@ ERRORS_FILE="${TEMP_DIR}/errors.txt"
 touch "$COMPLIANT_FILE"
 touch "$ERRORS_FILE"
 
-# Add a test error entry if TEST_EMAIL is set to true
-# This is useful for testing email notifications without actual non-compliant resources
-if [[ "${TEST_EMAIL:-false}" == "true" ]]; then
-    echo "Adding test error entry for email notification testing..."
-    echo "test-project|Test Resource: test-resource (us-central1)" >> "$ERRORS_FILE"
-fi
-
 SERVICE_ACCOUNT="sa-compliance-scanner@c4hnrd-tools.iam.gserviceaccount.com"
 ROLE="roles/viewer"
 
@@ -56,9 +49,6 @@ INCLUDE_EMPTY_DEFAULT_SUBNETS=${INCLUDE_EMPTY_DEFAULT_SUBNETS:-false}
 SAVE_TO_GCS=${SAVE_TO_GCS:-false}
 REPORT_BUCKET=${REPORT_BUCKET:-""}
 
-# Debug: Print email notification settings at the start
-echo "Debug: SEND_EMAIL_NOTIFICATION=${SEND_EMAIL_NOTIFICATION:-false}"
-echo "Debug: TEST_EMAIL=${TEST_EMAIL:-false}"
 echo "Debug: SAVE_TO_GCS=${SAVE_TO_GCS}"
 echo "Debug: REPORT_BUCKET=${REPORT_BUCKET:-"(not set)"}"
 
@@ -809,189 +799,6 @@ if [[ "$GRANT_IAM" != "true" ]]; then
             echo "  - $resource"
         done
         echo ""
-        # Send notification email if non-Canadian resources were found and notification is enabled
-        if [[ "${SEND_EMAIL_NOTIFICATION:-false}" == "true" ]]; then
-            echo "Sending email notification about non-Canadian resources..."
-            echo "Debug: SEND_EMAIL_NOTIFICATION=${SEND_EMAIL_NOTIFICATION}"
-            echo "Debug: NOTIFY_CLIENT=${NOTIFY_CLIENT:-(not set)}"
-            echo "Debug: NOTIFY_CLIENT_SECRET=${NOTIFY_CLIENT_SECRET:+****(set but hidden)}"
-            echo "Debug: KC_URL=${KC_URL:-(not set)}"
-            echo "Debug: NOTIFY_API_URL=${NOTIFY_API_URL:-(not set)}"
-            echo "Debug: ERROR_EMAIL_RECIPIENTS=${ERROR_EMAIL_RECIPIENTS:-(not set)}"
-
-            # Check if required environment variables are set
-            if [[ -z "${NOTIFY_CLIENT}" || -z "${NOTIFY_CLIENT_SECRET}" || -z "${KC_URL}" || -z "${NOTIFY_API_URL}" ]]; then
-                echo "❌ Error: Missing required environment variables for email notification"
-                echo "   Required: NOTIFY_CLIENT, NOTIFY_CLIENT_SECRET, KC_URL, NOTIFY_API_URL"
-            else
-                # Generate the email body content with the list of affected projects
-                EMAIL_BODY_FILE="${TEMP_DIR}/email_body.txt"
-                echo "GCP Canadian Resource Scanner detected non-Canadian resources in the following projects:" > "$EMAIL_BODY_FILE"
-                echo "" >> "$EMAIL_BODY_FILE"
-
-                # Get unique list of affected projects and format them properly
-                unique_projects=$(sort "$ERRORS_FILE" | cut -d'|' -f1 | sort -u)
-                while IFS= read -r project; do
-                    echo "- $project" >> "$EMAIL_BODY_FILE"
-                done <<< "$unique_projects"
-
-                echo "" >> "$EMAIL_BODY_FILE"
-                echo "Please see the attached CSV file for detailed resource information." >> "$EMAIL_BODY_FILE"
-                # Create a CSV attachment with the full report
-                CSV_ATTACHMENT_FILE="${TEMP_DIR}/non_compliant_resources.csv"
-                echo "Project,Resource Type,Resource Name,Location" > "$CSV_ATTACHMENT_FILE"
-
-                # Process each line from ERRORS_FILE for CSV creation
-                while IFS='|' read -r project resource_field1 resource_field2 resource_field3 resource_field4; do
-                    # Handle Artifact Registry format which has more fields
-                    if [[ "$resource_field1" == "Artifact Registry" ]]; then
-                        # Fields are: project|Artifact Registry|name|format|location
-                        echo "\"$project\",\"$resource_field1\",\"$resource_field2\",\"$resource_field4\"" >> "$CSV_ATTACHMENT_FILE"
-                    else
-                        # Handle standard format: project|Type: name (location)
-                        resource_type=$(echo "$resource_field1" | cut -d ':' -f1)
-                        details=$(echo "$resource_field1" | cut -d ':' -f2-)
-                        resource_name=$(echo "$details" | sed -E 's/^[ ]*(.*) \((.*)\)$/\1/')
-                        resource_location=$(echo "$details" | sed -E 's/^[ ]*(.*) \((.*)\)$/\2/')
-                        echo "\"$project\",\"$resource_type\",\"$resource_name\",\"$resource_location\"" >> "$CSV_ATTACHMENT_FILE"
-                    fi
-                done < "$ERRORS_FILE"
-                # Display the generated CSV for debugging
-                echo "Debug: Generated CSV content:"
-                cat "$CSV_ATTACHMENT_FILE"
-                # Base64 encode the CSV file for attachment
-                BASE64_ATTACHMENT=""
-                if command -v base64 &> /dev/null; then
-                    # Handle base64 encoding differences between macOS and Linux (Docker containers)
-                    if [[ $(uname -s) == "Darwin" ]]; then
-                        # macOS base64 (BSD version)
-                        BASE64_ATTACHMENT=$(base64 -i "$CSV_ATTACHMENT_FILE")
-                    else
-                        # Linux base64 (GNU version) - remove line wrapping
-                        BASE64_ATTACHMENT=$(base64 -w 0 "$CSV_ATTACHMENT_FILE" 2>/dev/null || base64 "$CSV_ATTACHMENT_FILE" | tr -d '\n')
-                    fi
-                else
-                    echo "Warning: base64 command not available, email will be sent without attachment"
-                fi
-                # Authentication with KeyCloak to get token
-                echo "  Authenticating with KeyCloak..."
-                AUTH_STR="${NOTIFY_CLIENT}:${NOTIFY_CLIENT_SECRET}"
-                # Handle base64 encoding differences between macOS and Linux (Docker containers)
-                if [[ $(uname -s) == "Darwin" ]]; then
-                    # macOS base64 (BSD version)
-                    BASIC_HASH=$(echo -n "$AUTH_STR" | base64)
-                else
-                    # Linux base64 (GNU version) - remove line wrapping
-                    BASIC_HASH=$(echo -n "$AUTH_STR" | base64 -w 0 2>/dev/null || echo -n "$AUTH_STR" | base64 | tr -d '\n')
-                fi
-                echo "  Debug: KeyCloak URL: $KC_URL"
-                echo "  Debug: Platform: $(uname -s)"
-                echo "  Debug: Base64 hash length: ${#BASIC_HASH}"
-
-                KC_RESPONSE=$(curl -s -X POST "$KC_URL" \
-                    -H "Content-Type: application/x-www-form-urlencoded" \
-                    -H "Authorization: Basic $BASIC_HASH" \
-                    -d "grant_type=client_credentials")
-
-                # Extract token from KeyCloak response
-                TOKEN=$(echo "$KC_RESPONSE" | grep -o '"access_token":"[^"]*' | sed 's/"access_token":"//')
-
-                if [[ -z "$TOKEN" ]]; then
-                    echo "❌ Error: Failed to get authentication token from KeyCloak"
-                    echo "   Platform: $(uname -s)"
-                    echo "   KeyCloak URL: $KC_URL"
-                    echo "   Full Response: $KC_RESPONSE"
-                    echo ""
-                    echo "   Common issues in Docker containers:"
-                    echo "   1. Network connectivity - container can't reach KeyCloak server"
-                    echo "   2. Base64 encoding differences between macOS/Linux"
-                    echo "   3. Environment variables not properly passed to container"
-                    echo "   4. KeyCloak client configuration issues"
-                else
-                    echo "  Sending email notification..."
-                    # Prepare email payload
-                    EMAIL_RECIPIENTS="${ERROR_EMAIL_RECIPIENTS:-compliance-team@example.com}"
-                    EMAIL_SUBJECT="GCP Canadian Resource Scanner: Non-Canadian Resources Detected"
-
-                    # Use jq if available to create valid JSON, otherwise use a simpler approach
-                    if command -v jq &> /dev/null; then
-                        if [[ ! -z "$BASE64_ATTACHMENT" ]]; then
-                            # Include attachment if base64 encoding was successful
-                            ATTACHMENT_FILENAME="non_compliant_resources_$(date +%Y-%m-%d).csv"
-                            EMAIL_JSON=$(jq -n \
-                                --arg recipients "$EMAIL_RECIPIENTS" \
-                                --arg subject "$EMAIL_SUBJECT" \
-                                --arg body "$(cat "$EMAIL_BODY_FILE")" \
-                                --arg filename "$ATTACHMENT_FILENAME" \
-                                --arg file_bytes "$BASE64_ATTACHMENT" \
-                                '{
-                                    recipients: $recipients,
-                                    content: {
-                                        subject: $subject,
-                                        body: $body,
-                                        attachments: [
-                                            {
-                                                fileName: $filename,
-                                                fileBytes: $file_bytes,
-                                                fileUrl: "",
-                                                attachOrder: 1
-                                            }
-                                        ]
-                                    }
-                                }')
-                        else
-                            # No attachment if base64 encoding failed
-                            EMAIL_JSON=$(jq -n \
-                                --arg recipients "$EMAIL_RECIPIENTS" \
-                                --arg subject "$EMAIL_SUBJECT" \
-                                --arg body "$(cat "$EMAIL_BODY_FILE")" \
-                                '{
-                                    recipients: $recipients,
-                                    content: {
-                                        subject: $subject,
-                                        body: $body
-                                    }
-                                }')
-                        fi
-                    else
-                        # Simple JSON construction (less robust but works for basic cases)
-                        # Properly escape newlines for JSON instead of removing them
-                        ESCAPED_BODY=$(sed 's/"/\\"/g; s/$/\\n/g' "$EMAIL_BODY_FILE" | tr -d '\n' | sed 's/\\n$//')
-                        if [[ ! -z "$BASE64_ATTACHMENT" ]]; then
-                            # Include attachment if base64 encoding was successful
-                            ATTACHMENT_FILENAME="non_compliant_resources_$(date +%Y-%m-%d).csv"
-                            EMAIL_JSON="{\"recipients\":\"$EMAIL_RECIPIENTS\",\"content\":{\"subject\":\"$EMAIL_SUBJECT\",\"body\":\"$ESCAPED_BODY\",\"attachments\":[{\"fileName\":\"$ATTACHMENT_FILENAME\",\"fileBytes\":\"$BASE64_ATTACHMENT\",\"fileUrl\":\"\",\"attachOrder\":1}]}}"
-                        else
-                            # No attachment if base64 encoding failed
-                            EMAIL_JSON="{\"recipients\":\"$EMAIL_RECIPIENTS\",\"content\":{\"subject\":\"$EMAIL_SUBJECT\",\"body\":\"$ESCAPED_BODY\"}}"
-                        fi
-                    fi
-
-                    # Send the email notification
-                    echo "Debug: Sending to URL: ${NOTIFY_API_URL}/api/v1/notify"
-                    echo "Debug: Email JSON (first 100 chars): ${EMAIL_JSON:0:100}..."
-
-                    # Send with the full payload
-                    NOTIFY_RESPONSE=$(curl -s -X POST "${NOTIFY_API_URL}/api/v1/notify" \
-                        -H "Content-Type: application/json" \
-                        -H "Authorization: Bearer $TOKEN" \
-                        -d "$EMAIL_JSON")
-
-                    echo "Debug: Notification response: $NOTIFY_RESPONSE"
-
-                    if echo "$NOTIFY_RESPONSE" | grep -q '"notifyStatus":"QUEUED"'; then
-                        if [[ ! -z "$BASE64_ATTACHMENT" ]]; then
-                            echo "  ✓ Email notification sent successfully with CSV attachment"
-                        else
-                            echo "  ✓ Email notification sent successfully"
-                        fi
-                    else
-                        echo "❌ Error: Failed to send email notification"
-                        echo "   Response: $NOTIFY_RESPONSE"
-                    fi
-                fi
-            fi
-        fi
     else
         echo ""
         echo "✅ NO NON-CANADIAN RESOURCES FOUND!"
@@ -1043,6 +850,18 @@ if [[ "$GRANT_IAM" != "true" ]]; then
         echo ""
         echo "⚠️  GCS reporting enabled but REPORT_BUCKET not specified"
     fi
+fi
+
+# Exit with error code if non-compliant resources were found (for GCP alerting)
+if [[ "$GRANT_IAM" != "true" && -s "$ERRORS_FILE" ]]; then
+    echo ""
+    echo "🚨 EXITING WITH ERROR CODE 1 - Non-compliant resources detected"
+    echo "This will trigger GCP Cloud Run job failure for alerting purposes"
+
+    # Clean up temp directory
+    rm -rf "$TEMP_DIR"
+
+    exit 1
 fi
 
 # Clean up temp directory
