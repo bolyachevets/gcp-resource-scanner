@@ -51,9 +51,16 @@ GRANT_IAM=${GRANT_VIEWER_ROLE:-false}
 # Set INCLUDE_EMPTY_DEFAULT_SUBNETS=true to include them (creates more noise but is more thorough)
 INCLUDE_EMPTY_DEFAULT_SUBNETS=${INCLUDE_EMPTY_DEFAULT_SUBNETS:-false}
 
+# Environment variable to control whether to save reports to Google Cloud Storage
+# Set SAVE_TO_GCS=true and REPORT_BUCKET to enable GCS report storage
+SAVE_TO_GCS=${SAVE_TO_GCS:-false}
+REPORT_BUCKET=${REPORT_BUCKET:-""}
+
 # Debug: Print email notification settings at the start
 echo "Debug: SEND_EMAIL_NOTIFICATION=${SEND_EMAIL_NOTIFICATION:-false}"
 echo "Debug: TEST_EMAIL=${TEST_EMAIL:-false}"
+echo "Debug: SAVE_TO_GCS=${SAVE_TO_GCS}"
+echo "Debug: REPORT_BUCKET=${REPORT_BUCKET:-"(not set)"}"
 
 echo "==============================================="
 echo "GCP Canadian Resource Scanner"
@@ -991,6 +998,51 @@ if [[ "$GRANT_IAM" != "true" ]]; then
     fi
 
     echo "=========================================="
+
+    # Save reports to Google Cloud Storage if enabled
+    if [[ "${SAVE_TO_GCS:-false}" == "true" && ! -z "${REPORT_BUCKET}" ]]; then
+        echo ""
+        echo "Saving compliance reports to Google Cloud Storage..."
+        
+        # Generate timestamp for unique filenames
+        TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+        ERRORS_REPORT="non-compliant-resources_${TIMESTAMP}.csv"
+        
+        # Upload non-compliant resources if any exist  
+        if [[ -s "$ERRORS_FILE" ]]; then
+            # Use the existing CSV generation logic for errors
+            ERRORS_CSV="${TEMP_DIR}/${ERRORS_REPORT}"
+            {
+                echo "Project,Resource Type,Resource Name,Location"
+                while IFS='|' read -r project resource_field1 resource_field2 resource_field3 resource_field4; do
+                    # Handle Artifact Registry format which has more fields
+                    if [[ "$resource_field1" == "Artifact Registry" ]]; then
+                        # Fields are: project|Artifact Registry|name|format|location
+                        echo "\"$project\",\"$resource_field1\",\"$resource_field2\",\"$resource_field4\""
+                    else
+                        # Handle standard format: project|Type: name (location)
+                        resource_type=$(echo "$resource_field1" | cut -d ':' -f1)
+                        details=$(echo "$resource_field1" | cut -d ':' -f2-)
+                        resource_name=$(echo "$details" | sed -E 's/^[ ]*(.*) \((.*)\)$/\1/')
+                        resource_location=$(echo "$details" | sed -E 's/^[ ]*(.*) \((.*)\)$/\2/')
+                        echo "\"$project\",\"$resource_type\",\"$resource_name\",\"$resource_location\""
+                    fi
+                done < "$ERRORS_FILE"
+            } > "$ERRORS_CSV"
+            
+            if gsutil cp "$ERRORS_CSV" "gs://${REPORT_BUCKET}/${ERRORS_REPORT}" 2>/dev/null; then
+                echo "  ✓ Non-compliant resources report uploaded: gs://${REPORT_BUCKET}/${ERRORS_REPORT}"
+                echo "Non-compliant resources saved to bucket: gs://${REPORT_BUCKET}/"
+            else
+                echo "  ⚠️  Failed to upload non-compliant resources report"
+            fi
+        else
+            echo "No non-compliant resources found - nothing to save to GCS"
+        fi
+    elif [[ "${SAVE_TO_GCS:-false}" == "true" && -z "${REPORT_BUCKET}" ]]; then
+        echo ""
+        echo "⚠️  GCS reporting enabled but REPORT_BUCKET not specified"
+    fi
 fi
 
 # Clean up temp directory

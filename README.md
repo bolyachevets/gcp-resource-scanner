@@ -44,6 +44,15 @@ The script can send email notifications when non-Canadian resources are detected
 SEND_EMAIL_NOTIFICATION=true ./run.sh
 ```
 
+### Report Storage
+
+The script can optionally save compliance reports to a Google Cloud Storage bucket:
+
+```bash
+# Enable GCS report storage
+SAVE_TO_GCS=true REPORT_BUCKET=my-compliance-reports ./run.sh
+```
+
 You can create a `.env` file in the project root with these variables:
 
 ```
@@ -57,6 +66,10 @@ ERROR_EMAIL_RECIPIENTS=compliance-team@example.com,admin@example.com
 
 # Test email without actual non-compliant resources
 TEST_EMAIL=false
+
+# GCS report storage
+SAVE_TO_GCS=false
+REPORT_BUCKET=my-compliance-reports-bucket
 
 # Scan configuration (comma-separated lists)
 SCAN_PROJECTS=a083gt,bcrbk9,c4hnrd
